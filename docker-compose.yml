@@ -1,0 +1,82 @@
+version: "3.9"
+
+services:
+  # ── FastAPI Backend ──
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+      - media_data:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clamav:
+        condition: service_started
+    networks:
+      - fakebuster-net
+    restart: unless-stopped
+
+  # ── PostgreSQL 16 ──
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fakebuster
+      POSTGRES_PASSWORD: fakebuster_secret
+      POSTGRES_DB: fakebuster
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fakebuster"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fakebuster-net
+    restart: unless-stopped
+
+  # ── Redis 7 ──
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fakebuster-net
+    restart: unless-stopped
+
+  # ── ClamAV Daemon ──
+  clamav:
+    image: clamav/clamav:1.2
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamav_data:/var/lib/clamav
+    networks:
+      - fakebuster-net
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  redis_data:
+  clamav_data:
+  media_data:
+
+networks:
+  fakebuster-net:
+    driver: bridge

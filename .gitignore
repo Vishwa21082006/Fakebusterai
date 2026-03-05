@@ -1,0 +1,63 @@
+# ═══════════════════════════════════════
+# FakeBuster AI — Git Ignore Rules
+# ═══════════════════════════════════════
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ── Virtual Environments ──
+venv/
+.venv/
+env/
+ENV/
+
+# ── Environment Variables ──
+.env
+.env.local
+.env.production
+
+# ── IDE / Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Test / Diagnostic Outputs ──
+backend/test_output.txt
+backend/test_result.txt
+backend/test_strict.txt
+backend/test_warnings.txt
+backend/warning_check.txt
+backend/diag_results.txt
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ── Docker Volumes (local) ──
+pg_data/
+redis_data/
+clamav_data/
+
+# ── Media Uploads ──
+backend/media/
+media/
+
+# ── SQLite dev database ──
+*.db
+
+# ── OS files ──
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -62,7 +62,7 @@ services:
 
   # ── ClamAV Daemon ──
   clamav:
-    image: clamav/clamav:1.2
+    image: clamav/clamav:latest
     ports:
       - "3310:3310"
     volumes:

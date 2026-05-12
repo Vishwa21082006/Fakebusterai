@@ -43,6 +43,15 @@ async function api(endpoint, options = {}) {
     const data = await resp.json().catch(() => null);
 
     if (!resp.ok) {
+        // Handle token expiration / auth errors — auto-logout
+        if (resp.status === 401) {
+            const detail = data?.detail || '';
+            if (detail.includes('expired') || detail.includes('Invalid') || detail.includes('Authentication')) {
+                toast('Session expired — please sign in again', 'warning');
+                logout();
+                throw new Error('Session expired');
+            }
+        }
         const msg = data?.detail || data?.message || `Request failed (${resp.status})`;
         throw new Error(msg);
     }
@@ -429,12 +438,17 @@ async function pollAnalysis(analysisId, attempts = 0) {
     try {
         const analysis = await apiGetAnalysis(analysisId);
         if (analysis.status === 'done' || analysis.status === 'failed') {
-            toast(
-                analysis.status === 'done'
-                    ? `Analysis complete! Score: ${(analysis.result_score * 100).toFixed(1)}%`
-                    : 'Analysis failed',
-                analysis.status === 'done' ? 'success' : 'error'
-            );
+            if (analysis.status === 'done') {
+                const score = analysis.result_score || 0;
+                const pct = (score * 100).toFixed(0);
+                const verdict = analysis.result_detail?.verdict;
+                const msg = verdict
+                    ? verdict
+                    : `Analysis complete — ${pct}% fake probability`;
+                toast(msg, 'success');
+            } else {
+                toast('Analysis failed — please try again', 'error');
+            }
             loadAnalyses();
             return;
         }
@@ -471,33 +485,97 @@ function renderAnalysisDetail(a) {
     const container = document.getElementById('analysis-content');
     const score = a.result_score != null ? a.result_score : 0;
     const scorePercent = (score * 100).toFixed(1);
+    const fakePercent = (score * 100).toFixed(0);
+    const realPercent = ((1.0 - score) * 100).toFixed(0);
     const circumference = 2 * Math.PI * 56; // r=56
     const offset = circumference - (score * circumference);
 
-    // Determine score color
+    // Determine score color and risk level
     let scoreColor = 'var(--accent-green)';
-    let verdict = 'Likely Authentic';
-    if (score > 0.7) {
+    let riskLevel = 'LOW RISK';
+    let riskIcon = '✓';
+    let verdictShort = 'Likely Authentic';
+    if (score > 0.85) {
         scoreColor = 'var(--accent-red)';
-        verdict = 'Likely Fake';
-    } else if (score > 0.4) {
+        riskLevel = 'HIGH RISK';
+        riskIcon = '⚠';
+        verdictShort = 'Very Likely AI-Generated';
+    } else if (score > 0.65) {
+        scoreColor = '#ff6b6b';
+        riskLevel = 'ELEVATED RISK';
+        riskIcon = '⚠';
+        verdictShort = 'Probably AI-Generated';
+    } else if (score > 0.45) {
         scoreColor = 'var(--accent-yellow)';
-        verdict = 'Uncertain';
+        riskLevel = 'UNCERTAIN';
+        riskIcon = '?';
+        verdictShort = 'Inconclusive';
+    } else if (score > 0.25) {
+        scoreColor = 'var(--accent-green)';
+        riskLevel = 'LOW RISK';
+        riskIcon = '✓';
+        verdictShort = 'Mostly Authentic';
     }
 
     const detail = a.result_detail || {};
     const layers = detail.layers || {};
-    const confidence = detail.confidence != null ? (detail.confidence * 100).toFixed(1) : '—';
-    const trustScore = detail.trust_score != null ? (detail.trust_score * 100).toFixed(1) : '—';
-    const facesDetected = detail.faces_detected || '—';
-    const warning = detail.warning || '';
+    const confidence = detail.confidence != null ? (detail.confidence * 100).toFixed(0) : '—';
+    const trustScore = detail.trust_score != null ? (detail.trust_score * 100).toFixed(0) : '—';
+    const verdict = detail.verdict || '';
+    const mediaType = detail.media_type || a.media_type || 'image';
+    const framesAnalyzed = detail.frames_analyzed || null;
 
+    // Build the human-readable verdict banner
+    let verdictBannerHTML = '';
+    if (a.status === 'done') {
+        const verdictText = verdict || `This ${mediaType} is ${fakePercent}% likely to be AI-generated`;
+        let bannerClass = 'verdict-authentic';
+        let bannerIconSvg = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>`;
+
+        if (score > 0.65) {
+            bannerClass = 'verdict-fake';
+            bannerIconSvg = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
+        } else if (score > 0.45) {
+            bannerClass = 'verdict-uncertain';
+            bannerIconSvg = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
+        }
+
+        verdictBannerHTML = `
+            <div class="verdict-banner ${bannerClass}">
+                <div class="verdict-icon">${bannerIconSvg}</div>
+                <div class="verdict-content">
+                    <div class="verdict-text">${verdictText}</div>
+                    <div class="verdict-meta">
+                        <span class="verdict-risk">${riskLevel}</span>
+                        <span class="verdict-separator">•</span>
+                        <span>Confidence: ${confidence}%</span>
+                        ${framesAnalyzed ? `<span class="verdict-separator">•</span><span>${framesAnalyzed} frames analyzed</span>` : ''}
+                    </div>
+                </div>
+            </div>`;
+    }
+
+    // Layer breakdown with enhanced visuals
     let layersHTML = '';
     const layerColors = {
-        spatial_cnn: '#00d4ff',
         frequency_analysis: '#7c3aed',
+        edge_coherence: '#00d4ff',
+        texture_analysis: '#f59e0b',
+        color_statistics: '#10b981',
+        // Legacy layer names from old model
+        spatial_cnn: '#00d4ff',
         skin_texture: '#f59e0b',
         ensemble_vit: '#10b981',
+    };
+
+    const layerDescriptions = {
+        frequency_analysis: 'Spectral analysis detects unnatural frequency patterns common in AI-generated media',
+        edge_coherence: 'Edge analysis measures consistency and natural variation in object boundaries',
+        texture_analysis: 'Texture analysis identifies overly smooth or synthetic surface patterns',
+        color_statistics: 'Color analysis checks for unnatural color distributions and correlations',
+        spatial_cnn: 'Spatial analysis of visual patterns using neural network detection',
+        skin_texture: 'Analysis of skin texture patterns for signs of AI generation',
+        ensemble_vit: 'Vision transformer ensemble for comprehensive feature analysis',
     };
 
     for (const [key, val] of Object.entries(layers)) {
@@ -505,28 +583,34 @@ function renderAnalysisDetail(a) {
         const layerPercent = (layerScore * 100).toFixed(1);
         const color = layerColors[key] || '#888';
         const name = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const description = layerDescriptions[key] || '';
+        const weight = val.weight ? (val.weight * 100).toFixed(0) : '—';
+
+        let layerVerdict = 'Authentic';
+        let layerVerdictClass = 'layer-verdict-safe';
+        if (layerScore > 0.7) { layerVerdict = 'Suspicious'; layerVerdictClass = 'layer-verdict-danger'; }
+        else if (layerScore > 0.4) { layerVerdict = 'Mixed'; layerVerdictClass = 'layer-verdict-warning'; }
+
         layersHTML += `
-            <div class="layer-detail">
-                <div>
-                    <div class="layer-name">${name}</div>
-                    <div class="layer-model">${val.model || ''}</div>
+            <div class="layer-detail-enhanced">
+                <div class="layer-header-row">
+                    <div class="layer-dot" style="background: ${color};"></div>
+                    <div class="layer-info">
+                        <div class="layer-name">${name}</div>
+                        <div class="layer-model">${val.model || ''} ${weight !== '—' ? `• Weight: ${weight}%` : ''}</div>
+                    </div>
+                    <div class="layer-verdict-badge ${layerVerdictClass}">${layerVerdict}</div>
+                    <div class="layer-score-val" style="color: ${color};">${layerPercent}%</div>
                 </div>
                 <div class="layer-progress">
                     <div class="layer-progress-fill" style="width: ${layerPercent}%; background: ${color};"></div>
                 </div>
-                <div class="layer-score-val" style="color: ${color};">${layerPercent}%</div>
+                ${description ? `<div class="layer-description">${description}</div>` : ''}
             </div>`;
     }
 
     container.innerHTML = `
-        ${warning ? `
-            <div class="warning-banner">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
-                    <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-                </svg>
-                ${warning}
-            </div>` : ''}
+        ${verdictBannerHTML}
 
         <div class="detail-header glass-card">
             <div class="score-gauge">
@@ -542,15 +626,15 @@ function renderAnalysisDetail(a) {
                     <div class="score-number" style="color: ${scoreColor};">
                         ${a.status === 'done' ? scorePercent + '%' : '—'}
                     </div>
-                    <div class="score-label">${a.status === 'done' ? verdict : a.status}</div>
+                    <div class="score-label">${a.status === 'done' ? verdictShort : a.status}</div>
                 </div>
             </div>
             <div class="detail-meta">
-                <h2>Analysis Results</h2>
+                <h2>Analysis Report</h2>
                 <div class="meta-grid">
                     <div class="meta-item">
-                        <span class="meta-label">ID</span>
-                        <span class="meta-value" style="font-family: monospace; font-size: 0.8rem;">${a.id}</span>
+                        <span class="meta-label">Analysis ID</span>
+                        <span class="meta-value" style="font-family: monospace; font-size: 0.8rem;">${a.id.substring(0, 12)}…</span>
                     </div>
                     <div class="meta-item">
                         <span class="meta-label">Status</span>
@@ -565,7 +649,7 @@ function renderAnalysisDetail(a) {
                         <span class="meta-value" style="text-transform: capitalize;">${a.media_type}</span>
                     </div>
                     <div class="meta-item">
-                        <span class="meta-label">Created</span>
+                        <span class="meta-label">Submitted</span>
                         <span class="meta-value">${formatDate(a.created_at)}</span>
                     </div>
                     <div class="meta-item">
@@ -574,12 +658,12 @@ function renderAnalysisDetail(a) {
                     </div>
                     ${a.model_version ? `
                     <div class="meta-item">
-                        <span class="meta-label">Model</span>
+                        <span class="meta-label">Engine</span>
                         <span class="meta-value">${a.model_version}</span>
                     </div>` : ''}
                     ${a.file_hash ? `
                     <div class="meta-item">
-                        <span class="meta-label">SHA-256</span>
+                        <span class="meta-label">File Hash</span>
                         <span class="meta-value" style="font-family: monospace; font-size: 0.75rem;">${a.file_hash.substring(0, 16)}…</span>
                     </div>` : ''}
                 </div>
@@ -587,24 +671,53 @@ function renderAnalysisDetail(a) {
         </div>
 
         ${a.status === 'done' && Object.keys(layers).length > 0 ? `
-        <div class="layers-card glass-card">
-            <h3>Detection Layers Breakdown</h3>
-            ${layersHTML}
+        <div class="result-summary-card glass-card">
+            <div class="summary-grid">
+                <div class="summary-stat">
+                    <div class="summary-stat-icon" style="background: ${score > 0.5 ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.12)'}; color: ${scoreColor};">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    </div>
+                    <div>
+                        <div class="summary-stat-value" style="color: ${scoreColor};">${trustScore}%</div>
+                        <div class="summary-stat-label">Trust Score</div>
+                    </div>
+                </div>
+                <div class="summary-stat">
+                    <div class="summary-stat-icon" style="background: rgba(0,212,255,0.12); color: var(--accent-cyan);">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    </div>
+                    <div>
+                        <div class="summary-stat-value" style="color: var(--accent-cyan);">${confidence}%</div>
+                        <div class="summary-stat-label">Confidence</div>
+                    </div>
+                </div>
+                <div class="summary-stat">
+                    <div class="summary-stat-icon" style="background: rgba(124,58,237,0.12); color: var(--accent-purple);">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                    </div>
+                    <div>
+                        <div class="summary-stat-value" style="color: var(--accent-purple);">${Object.keys(layers).length}</div>
+                        <div class="summary-stat-label">Layers Used</div>
+                    </div>
+                </div>
+                <div class="summary-stat">
+                    <div class="summary-stat-icon" style="background: rgba(245,158,11,0.12); color: var(--accent-yellow);">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                    </div>
+                    <div>
+                        <div class="summary-stat-value" style="color: var(--accent-yellow);">${framesAnalyzed || '1'}</div>
+                        <div class="summary-stat-label">${framesAnalyzed ? 'Frames' : 'Image'} Analyzed</div>
+                    </div>
+                </div>
+            </div>
         </div>
 
-        <div class="trust-card glass-card">
-            <div class="trust-item">
-                <div class="trust-value" style="color: ${scoreColor};">${trustScore}%</div>
-                <div class="trust-label">Trust Score</div>
+        <div class="layers-card glass-card">
+            <div class="layers-card-header">
+                <h3>Forensic Layer Breakdown</h3>
+                <span class="layers-subtitle">Each layer analyzes different aspects of the media</span>
             </div>
-            <div class="trust-item">
-                <div class="trust-value" style="color: var(--accent-cyan);">${confidence}%</div>
-                <div class="trust-label">Confidence</div>
-            </div>
-            <div class="trust-item">
-                <div class="trust-value" style="color: var(--accent-purple);">${facesDetected}</div>
-                <div class="trust-label">Faces Detected</div>
-            </div>
+            ${layersHTML}
         </div>` : ''}
 
         ${a.status === 'failed' && a.error_message ? `
@@ -614,9 +727,30 @@ function renderAnalysisDetail(a) {
         </div>` : ''}
 
         ${a.status === 'queued' || a.status === 'processing' ? `
-        <div class="empty-state" style="padding: 40px;">
-            <div class="btn-loader" style="width: 28px; height: 28px; border-width: 3px; border-color: rgba(255,255,255,0.1); border-top-color: var(--accent-cyan);"></div>
-            <p>Analysis is ${a.status}. Results will appear when complete.</p>
+        <div class="processing-state glass-card">
+            <div class="processing-animation">
+                <div class="processing-ring"></div>
+                <div class="processing-ring processing-ring-2"></div>
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="2" class="processing-icon">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+            </div>
+            <h3 class="processing-title">Analyzing ${a.media_type === 'video' ? 'Video' : 'Image'}...</h3>
+            <p class="processing-subtitle">Running forensic analysis across ${a.media_type === 'video' ? 'multiple frames' : 'all detection layers'}. This usually takes a few seconds.</p>
+            <div class="processing-steps">
+                <div class="processing-step ${a.status === 'processing' ? 'active' : 'done'}">
+                    <div class="step-dot"></div>
+                    <span>Upload verified</span>
+                </div>
+                <div class="processing-step ${a.status === 'processing' ? 'active' : ''}">
+                    <div class="step-dot"></div>
+                    <span>Running forensic analysis</span>
+                </div>
+                <div class="processing-step">
+                    <div class="step-dot"></div>
+                    <span>Generating report</span>
+                </div>
+            </div>
         </div>` : ''}
     `;
 
